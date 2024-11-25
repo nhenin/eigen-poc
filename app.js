@@ -1,20 +1,26 @@
-const { JsonRpcProvider, Contract, getAddress } = require("ethers");
+const { JsonRpcProvider, Contract, getAddress, formatUnits } = require("ethers");
 const fs = require("fs");
 
 // Holesky RPC
 const provider = new JsonRpcProvider("https://ethereum-holesky.publicnode.com");
 
-// Load contracts
-const delegationManager = loadContract("DelegationManager.json", "0xA44151489861Fe9e3055d95adC98FbD462B948e7");
+const erc20ABI = [
+    "function name() view returns (string)",
+    "function symbol() view returns (string)",
+    "function decimals() view returns (uint8)"
+];
 
-listFunctions("DelegationManager.json");
+// Load contracts
+const delegationManager = loadContract("./abis/DelegationManager.json", "0xA44151489861Fe9e3055d95adC98FbD462B948e7");
+
+listFunctions("./abis/DelegationManager.json");
 
 
 (async () => {
     try {
         // Query 1: DelegationManager - Get operator a staker is delegated to
         const stakerAddress = getAddress("0x6cdA20abb7A5361c7052C91b1ABa79AF1819A94A");
-        const operatorAddress = await delegationManager.delegatedTo(stakerAddress);
+        const operatorAddress =  await delegationManager.delegatedTo(stakerAddress);
         if (!operatorAddress) {
             console.error("No operator found for the staker.");
             return;
@@ -34,26 +40,7 @@ listFunctions("DelegationManager.json");
         console.log("Delegatable Strategies:", strategies);
         console.log("Delegatable Shares:", shares);
         
-
-        const erc20ABI = [
-            "function name() view returns (string)",
-            "function symbol() view returns (string)",
-            "function decimals() view returns (uint8)"
-        ];
-        
-        // Query Metadata
-        for (const strategy of strategies) {
-           
-            const strategyManager = loadContract("StrategyManager.json", strategies[0] );
-            const tokenAddress = await strategyManager.token();
-        
-            const tokenContract = new Contract(tokenAddress, erc20ABI, provider);
-            const name = await tokenContract.name();
-            const symbol = await tokenContract.symbol();
-            const decimals = await tokenContract.decimals();
-        
-            console.log(`Token: ${name} (${symbol}), Decimals: ${decimals}`);
-        }
+        queryDelegations(strategies, operatorAddress, [stakerAddress]);
 
         // Query 4: DelegationManager - Get withdrawal delays for strategies
         const mutableStrategies = [...strategies];
@@ -111,3 +98,55 @@ function listFunctions(abiFilePath) {
     }
 }
 
+async function queryDelegations(strategies, operator, stakers) {
+    try {
+      for (const strategyAddress of strategies) {
+        // Load the StrategyBase contract
+        const strategyManager = loadContract("./abis/StrategyBase.json", strategyAddress);
+  
+        // Query the underlying token address
+        const tokenAddress = await strategyManager.underlyingToken();
+  
+        // Load the ERC20 token contract
+        const tokenContract = new Contract(tokenAddress, erc20ABI, provider);
+  
+        // Query token metadata
+        const name = await tokenContract.name();
+        const symbol = await tokenContract.symbol();
+        const decimals = await tokenContract.decimals();
+  
+        console.log(`\n=== Strategy at ${strategyAddress} ===`);
+        console.log(`Token: ${name} (${symbol}), Decimals: ${decimals}`);
+        operatorShares = await strategyManager.shares(operator);
+        // Query delegation data for each staker
+        for (const staker of stakers) {
+          const delegatedShares = await strategyManager.shares(staker);
+          const totalShares = await strategyManager.totalShares();
+  
+          // Convert shares to underlying token amounts
+          const delegatedTokens = await strategyManager.sharesToUnderlyingView(delegatedShares);
+          const totalTokens = await strategyManager.sharesToUnderlyingView(totalShares);
+  
+          // Format the numbers to human-readable amounts
+          const readableDelegatedTokens = formatNumber(parseFloat((formatUnits(delegatedTokens, decimals))));
+          const readableOperatorShares = formatNumber(parseFloat((formatUnits(operatorShares, decimals))));
+          const readableTotalTokens = formatNumber(parseFloat(formatUnits(totalTokens, decimals)));
+         
+          // Output the staker's delegation
+          console.log(`Staker ${staker} has delegated ${readableDelegatedTokens} /  ${readableOperatorShares} ${symbol} to Operator` );
+          console.log(`Operator ${staker} has delegated ${readableOperatorShares} /  ${readableTotalTokens} ${symbol} in total`);
+        }
+      }
+    } catch (error) {
+      console.error("Error querying delegations:", error);
+    }
+  }
+
+// Utility to format numbers in human-readable form
+function formatNumber(value) {
+    const absValue = Math.abs(value);
+    if (absValue >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+    if (absValue >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+    if (absValue >= 1e3) return `${(value / 1e3).toFixed(2)}K`;
+    return value.toFixed(2);
+  }
